@@ -1,6 +1,9 @@
-import logging
+from logging import getLogger, StreamHandler, DEBUG, Formatter
+from collections import namedtuple
+import json
 import time
 import random
+import traceback
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -11,6 +14,8 @@ from selenium.webdriver.common.alert import Alert
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+
+from slack import WebhookClient
 
 import config
 
@@ -26,166 +31,124 @@ DRIVER_PATH = config.driver_path
 
 random.seed()
 
-formatter = '%(levelname)s : %(asctime)s : %(message)s'
-logging.basicConfig(level=logging.INFO, format=formatter)
+log_format = '%(levelname)s : %(asctime)s : %(message)s'
+logger = getLogger(__name__)
+handler = StreamHandler()
+handler.setLevel(DEBUG)
+handler.setFormatter(Formatter(log_format))
+logger.setLevel(DEBUG)
+logger.addHandler(handler)
+logger.propagate = False
+
+
+slack_client = WebhookClient(config.slack_incoming_webhook_url)
 
 
 def random_wait(start=2, stop=3):
     sec = random.randint(start, stop)
+    logger.debug(f"sleep {sec}s")
     time.sleep(sec)
 
 
-def wait1():
-    time.sleep(1)
+def wait1m():
+    random_wait(45, 75)
 
 
-get_wait = None
+Follower = namedtuple('Follower', ['href', 'name'])
 
 
-def login(driver):
-    selector = '#react-root > section > nav > div._8MQSO.Cx7Bp > div > div > div.ctQZg > div > span > a:nth-child(1) > button'
-    button = get_wait(selector)
-    # ログインが見つからなかった -> ログイン済みと見なす
-    if button is None:
-        print("already logged in")
-        return
+def read_spam_followers():
+    with open("spam_followers.json", "r") as f:
+        body = f.read()
 
-    random_wait()
-    button.click()
-
-    selector = "#loginForm > div > div:nth-child(1) > div > label > input"
-    input_account = get_wait(selector)
-
-    selector = "#loginForm > div > div:nth-child(2) > div > label > input"
-    input_password = get_wait(selector)
-
-    random_wait()
-    input_account.send_keys(config.account)
-    input_password.send_keys(config.password)
-
-    button = get_wait("#loginForm > div > div:nth-child(3) > button")
-    button.click()
-
-    button = get_wait(
-        "#react-root > section > main > div > div > div > div > button")
-    random_wait(1, 1)
-    button.click()
-
-
-def show_followers(driver):
-    # show follower
-    selector = "#react-root > section > main > div > header > section > ul > li:nth-child(2) > a"
-    anchor = get_wait(selector)
-    if not anchor:
-        anchor = driver.find_element_by_css_selector(selector)
-
-    if anchor:
-        anchor.click()
-    else:
-        print("no follower")
-
-
-def show_top_follower(driver):
-    selector = "a._2dbep.qNELH.kIKUG"
-    anchor = get_wait(selector)
-    if not anchor:
-        anchor = driver.find_element_by_css_selector(selector)
-
-    if anchor:
-        anchor.click()
-    else:
-        print("no anchor")
+    return json.loads(body, object_hook=lambda f: Follower(*f.values()))
 
 
 def block_follower(driver):
-    selector = "a.hUQXy"
-    button = get_wait(selector)
-    if not button:
-        button = driver.find_element_by_css_selector(selector)
+    def wait_button(text):
+        return WebDriverWait(driver, 60).until(
+            EC.visibility_of_element_located(
+                (By.XPATH, f'//button[text()="{text}"]'))
+        )
 
-    if button:
-        button.click()
+    def wait_element(selector):
+        return WebDriverWait(driver, 60).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
+        )
+
+    # ... をクリックする
+    logger.debug("wait '...' button")
+    wait_element("header button")
+    b = driver.find_elements_by_css_selector("header button")[-1]
+    wait1m()
+    b.click()
+
+    # このユーザーをブロック をクリックする
+    logger.debug("wait block button")
+    b = wait_button('このユーザーをブロック')
+    wait1m()
+    b.click()
+
+    # ブロック をくりっくする
+    logger.debug("wait block button 2")
+    b = wait_button('ブロックする')
+    wait1m()
+    b.click()
+
+    # 閉じる をクリックする
+    logger.debug("wait close button")
+    b = wait_button('閉じる')
+    wait1m()
+    b.click()
+
+    logger.debug("done")
+
+
+def notify(blocked_followers):
+    if not blocked_followers:
+        text = "no blocked account"
     else:
-        print("no button")
-        return
+        text = f"blocked: {len(blocked_followers)}\nlast: {blocked_followers[-1]}"
 
-    selector = "button.aOOlW.-Cab_"
-    button = get_wait(selector)
-    if not button:
-        button = driver.find_element_by_css_selector(selector)
-
-    if button:
-        button.click()
-    else:
-        print("no button")
-        return
-
-    wait1()
-
-    selector = "button.aOOlW.bIiDR"
-    button = get_wait(selector)
-    if not button:
-        button = driver.find_element_by_css_selector(selector)
-
-    if button:
-        button.click()
-    else:
-        print("no button")
-        return
-
-    wait1()
-
-    selector = "button.aOOlW.HoLwm"
-    button = get_wait(selector)
-    if not button:
-        button = driver.find_element_by_css_selector(selector)
-
-    if button:
-        button.click()
-    else:
-        print("no button")
-        return
+    slack_client.send(text=text)
+    logger.info(text)
 
 
 def main():
-    global get_wait
+    checkpoint_time = time.time()
+    blocked_followers = []
+
     driver = webdriver.Chrome(
         executable_path=DRIVER_PATH, options=options)
 
-    def gw(selector):
-        try:
-            return WebDriverWait(driver, 10).until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
-            )
-        finally:
-            return None
+    logger.info("start")
 
-    get_wait = gw
+    try:
 
-    # my page
-    url = f'https://www.instagram.com/{config.account}/'
-    driver.get(url)
+        followers = read_spam_followers()
 
-    # login(driver)
-    logging.info("start")
+        for i, f in enumerate(followers):
+            logger.info(f"{i:-4d} target: {f.name}")
+            driver.get(f.href)
+            block_follower(driver)
 
-    for i in range(1):
-        logging.info(f"count {i:-5} start")
-        driver.get(url)
-        driver.refresh()
-        show_followers(driver)
-        wait1()
-        show_top_follower(driver)
-        random_wait()
-        block_follower(driver)
-        logging.info(f"count {i:-5} end")
-        random_wait(60, 120)
+            blocked_followers.append(f.name)
 
-    random_wait()
+            current = time.time()
+            if current - checkpoint_time > 60 * 60:
+                notify(blocked_followers)
 
-    driver.quit()
+                checkpoint_time = time.time()
+                blocked_followers.clear()
 
-    logging.info("end")
+    except Exception as e:
+        notify(blocked_followers)
+        slack_client.send(text=f'{e}')
+        logger.exception(f'{e}')
+    finally:
+        driver.quit()
+
+    logger.info("end")
 
 
 if __name__ == "__main__":
