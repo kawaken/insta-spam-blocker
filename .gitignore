@@ -1,3 +1,6 @@
 /.venv
 /user-data
 config.py
+spam_followers.json
+*.log
+/.vscode
