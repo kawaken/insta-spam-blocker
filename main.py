@@ -50,8 +50,8 @@ def random_wait(start=2, stop=3):
     time.sleep(sec)
 
 
-def wait1m():
-    random_wait(45, 75)
+def wait90s():
+    time.sleep(90)
 
 
 Follower = namedtuple('Follower', ['href', 'name'])
@@ -76,32 +76,53 @@ def block_follower(driver):
             EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
         )
 
+    def wait_disabled():
+        return WebDriverWait(driver, 60).until(
+            EC.visibility_of_element_located(
+                (By.XPATH, f'//h2[text()="このページはご利用いただけません。"]'))
+        )
+
     # ... をクリックする
     logger.debug("wait '...' button")
-    wait_element("header button")
-    b = driver.find_elements_by_css_selector("header button")[-1]
-    wait1m()
-    b.click()
+    try:
+        wait_element("header button")
+        b = driver.find_elements_by_css_selector("header button")[-1]
+    except TimeoutException:
+        logger.debug("cant find '...' button, try finding 'このページはご利用いただけません'")
+        _ = wait_disabled()
+        logger.debug(f"user is disabled")
+        # 無効なユーザー
+        return False
+    else:
+        wait90s()
+        b.click()
 
     # このユーザーをブロック をクリックする
     logger.debug("wait block button")
-    b = wait_button('このユーザーをブロック')
-    wait1m()
-    b.click()
+    try:
+        b = wait_button('このユーザーをブロック')
+    except TimeoutException:
+        # '...'があってブロックがないということはブロック済み
+        return False
+    else:
+        wait90s()
+        b.click()
 
     # ブロック をくりっくする
     logger.debug("wait block button 2")
     b = wait_button('ブロックする')
-    wait1m()
+    wait90s()
     b.click()
 
     # 閉じる をクリックする
     logger.debug("wait close button")
     b = wait_button('閉じる')
-    wait1m()
+    wait90s()
     b.click()
 
     logger.debug("done")
+
+    return True
 
 
 def notify(blocked_followers):
@@ -130,7 +151,11 @@ def main():
         for i, f in enumerate(followers):
             logger.info(f"{i:-4d} target: {f.name}")
             driver.get(f.href)
-            block_follower(driver)
+            success = block_follower(driver)
+
+            if not success:
+                logger.warn(f"skip: {f.name}")
+                continue
 
             blocked_followers.append(f.name)
 
@@ -145,10 +170,12 @@ def main():
         notify(blocked_followers)
         slack_client.send(text=f'{e}')
         logger.exception(f'{e}')
-    finally:
-        driver.quit()
+    # finally:
+    #     driver.quit()
 
     logger.info("end")
+
+    input('Enter any key to quit')
 
 
 if __name__ == "__main__":
