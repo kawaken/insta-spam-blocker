@@ -160,7 +160,8 @@ def main():
             blocked_followers.append(f.name)
 
             current = time.time()
-            if current - checkpoint_time > 60 * 60:
+            if current - checkpoint_time > 60 * 60 * 12:
+                # 安定して動くようになったので半日おきに通知する
                 notify(blocked_followers)
 
                 checkpoint_time = time.time()
