@@ -175,6 +175,8 @@ def main():
     #     driver.quit()
 
     logger.info("end")
+    notify(blocked_followers)
+    slack_client.send(text="end")
 
     input('Enter any key to quit')
 
